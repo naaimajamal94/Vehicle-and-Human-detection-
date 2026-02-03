@@ -14,22 +14,20 @@ st.set_page_config(
 
 st.title("🚦 Risk-Aware Autonomous Navigation App")
 
-st.markdown(
-    """
-This app demonstrates **human-centric autonomous decision-making**.
+st.markdown("""
+This app demonstrates **AI-automated risk-aware decision making**.
 
 - 👤 Human → **STOP**
 - 🚗 Vehicle → **WAIT / OVERTAKE**
-- Decisions are based on **distance, relative speed, and risk**
-"""
-)
+- Decisions use **distance + relative speed + risk**
+""")
 
 st.warning("⏳ Video processing may take some time depending on video length.")
 
 # -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
-MODEL_PATH = "person_vehicle_model.pt"   # user provides this file
+MODEL_PATH = "person_vehicle_model.pt"   # must be present in repo
 CONF_THRESH = 0.3
 MAX_APPROACH_SPEED = 200
 DIST_CLOSE = 0.6
@@ -53,11 +51,16 @@ uploaded_video = st.file_uploader(
 
 if uploaded_video:
 
+    # Save uploaded video temporarily
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_video.read())
 
     cap = cv2.VideoCapture(tfile.name)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 1:
+        fps = 25
+
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     frames = []
@@ -82,7 +85,7 @@ if uploaded_video:
             action = "FORWARD"
 
             for i, box in enumerate(results[0].boxes):
-                cls_id = int(box.cls[0])
+                cls_id = int(box.cls[0])  # 0=person, 1=vehicle
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 cx = (x1 + x2) / 2
                 box_h = y2 - y1
@@ -100,19 +103,19 @@ if uploaded_video:
                 speed = min(speed / MAX_APPROACH_SPEED, 1.0)
 
                 # ---------------- Centrality (0–1)
-                central = 1 - abs(cx - w/2) / (w/2)
+                central = 1 - abs(cx - w / 2) / (w / 2)
 
                 # ---------------- Risk (0–1)
                 risk = 0.5 * rel_dist + 0.3 * speed + 0.2 * central
 
                 label = "PERSON" if cls_id == 0 else "VEHICLE"
-                color = (0,255,0) if cls_id == 0 else (255,0,0)
+                color = (0, 255, 0) if cls_id == 0 else (255, 0, 0)
 
-                cv2.rectangle(frame, (x1,y1),(x2,y2),color,2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(
                     frame,
                     f"{label} | RISK {risk:.2f}",
-                    (x1, y1-6),
+                    (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
                     color,
@@ -128,10 +131,10 @@ if uploaded_video:
             cv2.putText(
                 frame,
                 f"ACTION: {action}",
-                (20,40),
+                (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
-                (0,0,255),
+                (0, 0, 255),
                 3
             )
 
@@ -144,10 +147,21 @@ if uploaded_video:
     cap.release()
 
     # -------------------------------------------------
-    # SAVE & DISPLAY OUTPUT
+    # SAFE VIDEO SAVE (CRASH-PROOF)
     # -------------------------------------------------
+    if len(frames) == 0:
+        st.error("❌ No frames were processed. Please upload a valid video.")
+        st.stop()
+
     out_path = "output.mp4"
-    imageio.mimsave(out_path, frames, fps=fps)
+    safe_fps = int(fps) if fps > 1 else 25
+
+    imageio.mimsave(
+        out_path,
+        frames,
+        fps=safe_fps,
+        format="FFMPEG"
+    )
 
     st.success("✅ Processing complete")
     st.video(out_path)
