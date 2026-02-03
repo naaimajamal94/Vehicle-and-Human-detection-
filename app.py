@@ -1,93 +1,153 @@
 import streamlit as st
-import tempfile, os
-import cv2, time
+import tempfile, os, time
+import cv2
 import imageio
 from ultralytics import YOLO
 
-st.set_page_config(page_title="Risk-Aware Navigation", layout="centered")
+# -------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------
+st.set_page_config(
+    page_title="Risk-Aware Autonomous Navigation",
+    layout="centered"
+)
 
-st.title("🚦 Risk-Aware Autonomous Navigation Demo")
+st.title("🚦 Risk-Aware Autonomous Navigation App")
 
-# ---- CONFIG ----
-MODEL_PATH = "person_vehicle_model.pt"  # user provides locally
+st.markdown(
+    """
+This app demonstrates **human-centric autonomous decision-making**.
+
+- 👤 Human → **STOP**
+- 🚗 Vehicle → **WAIT / OVERTAKE**
+- Decisions are based on **distance, relative speed, and risk**
+"""
+)
+
+st.warning("⏳ Video processing may take some time depending on video length.")
+
+# -------------------------------------------------
+# CONFIG
+# -------------------------------------------------
+MODEL_PATH = "person_vehicle_model.pt"   # user provides this file
 CONF_THRESH = 0.3
+MAX_APPROACH_SPEED = 200
+DIST_CLOSE = 0.6
 
-# ---- LOAD MODEL ----
+# -------------------------------------------------
+# LOAD MODEL
+# -------------------------------------------------
 @st.cache_resource
 def load_model():
     return YOLO(MODEL_PATH)
 
 model = load_model()
 
-uploaded_video = st.file_uploader("Upload a video", type=["mp4"])
+# -------------------------------------------------
+# VIDEO UPLOAD
+# -------------------------------------------------
+uploaded_video = st.file_uploader(
+    "Upload a video file",
+    type=["mp4"]
+)
 
 if uploaded_video:
+
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_video.read())
 
     cap = cv2.VideoCapture(tfile.name)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
     frames = []
-
     prev_state = {}
+    processed = 0
 
-    st.info("Processing video…")
+    progress = st.progress(0)
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # -------------------------------------------------
+    # PROCESS VIDEO
+    # -------------------------------------------------
+    with st.spinner("Processing video… please wait ⏳"):
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        frame = cv2.resize(frame, (640, 480))
-        h, w, _ = frame.shape
+            frame = cv2.resize(frame, (640, 480))
+            h, w, _ = frame.shape
 
-        results = model(frame, conf=CONF_THRESH, verbose=False)
-        action = "FORWARD"
+            results = model(frame, conf=CONF_THRESH, verbose=False)
+            action = "FORWARD"
 
-        for i, box in enumerate(results[0].boxes):
-            cls_id = int(box.cls[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cx = (x1 + x2) / 2
-            box_h = y2 - y1
+            for i, box in enumerate(results[0].boxes):
+                cls_id = int(box.cls[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cx = (x1 + x2) / 2
+                box_h = y2 - y1
 
-            # Distance
-            rel_dist = min((box_h / h) / 0.6, 1.0)
+                # ---------------- Distance (0–1)
+                rel_dist = min((box_h / h) / DIST_CLOSE, 1.0)
 
-            # Speed
-            speed = 0
-            now = time.time()
-            if i in prev_state:
-                ph, pt = prev_state[i]
-                speed = max((box_h - ph) / (now - pt + 1e-6), 0)
-            prev_state[i] = (box_h, now)
-            speed = min(speed / 200, 1.0)
+                # ---------------- Relative Speed (0–1)
+                now = time.time()
+                speed = 0
+                if i in prev_state:
+                    ph, pt = prev_state[i]
+                    speed = max((box_h - ph) / (now - pt + 1e-6), 0)
+                prev_state[i] = (box_h, now)
+                speed = min(speed / MAX_APPROACH_SPEED, 1.0)
 
-            # Centrality
-            central = 1 - abs(cx - w/2) / (w/2)
+                # ---------------- Centrality (0–1)
+                central = 1 - abs(cx - w/2) / (w/2)
 
-            # Risk (0–1)
-            risk = 0.5*rel_dist + 0.3*speed + 0.2*central
+                # ---------------- Risk (0–1)
+                risk = 0.5 * rel_dist + 0.3 * speed + 0.2 * central
 
-            label = "PERSON" if cls_id == 0 else "VEHICLE"
-            color = (0,255,0) if cls_id == 0 else (255,0,0)
-            cv2.rectangle(frame, (x1,y1),(x2,y2),color,2)
-            cv2.putText(frame, f"{label} | {risk:.2f}", (x1,y1-6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                label = "PERSON" if cls_id == 0 else "VEHICLE"
+                color = (0,255,0) if cls_id == 0 else (255,0,0)
 
-            if cls_id == 0 and risk > 0.6:
-                action = "STOP"
-            elif cls_id == 1 and risk > 0.8:
-                action = "WAIT"
+                cv2.rectangle(frame, (x1,y1),(x2,y2),color,2)
+                cv2.putText(
+                    frame,
+                    f"{label} | RISK {risk:.2f}",
+                    (x1, y1-6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2
+                )
 
-        cv2.putText(frame, f"ACTION: {action}", (20,40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
+                # ---------------- Decisions
+                if cls_id == 0 and risk >= 0.6:
+                    action = "STOP"
+                elif cls_id == 1 and risk >= 0.8:
+                    action = "WAIT"
 
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            cv2.putText(
+                frame,
+                f"ACTION: {action}",
+                (20,40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0,0,255),
+                3
+            )
+
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+            processed += 1
+            if total_frames > 0:
+                progress.progress(min(processed / total_frames, 1.0))
 
     cap.release()
 
+    # -------------------------------------------------
+    # SAVE & DISPLAY OUTPUT
+    # -------------------------------------------------
     out_path = "output.mp4"
     imageio.mimsave(out_path, frames, fps=fps)
 
-    st.success("Done")
+    st.success("✅ Processing complete")
     st.video(out_path)
