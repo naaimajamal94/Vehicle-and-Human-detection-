@@ -1,5 +1,5 @@
 import streamlit as st
-import tempfile, os, time
+import tempfile, time
 import cv2
 import imageio
 from ultralytics import YOLO
@@ -12,22 +12,22 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("🚦 Risk-Aware Autonomous Navigation App")
+st.title("🚦 Risk-Aware Autonomous Navigation")
 
 st.markdown("""
-This app demonstrates **AI-automated risk-aware decision making**.
+**Automated AI decision system**
 
-- 👤 Human → **STOP**
-- 🚗 Vehicle → **WAIT / OVERTAKE**
-- Decisions use **distance + relative speed + risk**
+- 👤 Human → STOP  
+- 🚗 Vehicle → WAIT  
+- Decisions based on **distance + speed + risk**
 """)
 
-st.warning("⏳ Video processing may take some time depending on video length.")
+st.warning("⏳ Video processing may take time depending on length.")
 
 # -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
-MODEL_PATH = "person_vehicle_model.pt"   # must be present in repo
+MODEL_PATH = "person_vehicle_model.pt"   # must be in repo
 CONF_THRESH = 0.3
 MAX_APPROACH_SPEED = 200
 DIST_CLOSE = 0.6
@@ -44,19 +44,13 @@ model = load_model()
 # -------------------------------------------------
 # VIDEO UPLOAD
 # -------------------------------------------------
-uploaded_video = st.file_uploader(
-    "Upload a video file",
-    type=["mp4"]
-)
+video = st.file_uploader("Upload a video", type=["mp4"])
 
-if uploaded_video:
-
-    # Save uploaded video temporarily
+if video:
     tfile = tempfile.NamedTemporaryFile(delete=False)
-    tfile.write(uploaded_video.read())
+    tfile.write(video.read())
 
     cap = cv2.VideoCapture(tfile.name)
-
     fps = cap.get(cv2.CAP_PROP_FPS)
     if not fps or fps <= 1:
         fps = 25
@@ -65,14 +59,10 @@ if uploaded_video:
 
     frames = []
     prev_state = {}
+    progress = st.progress(0)
     processed = 0
 
-    progress = st.progress(0)
-
-    # -------------------------------------------------
-    # PROCESS VIDEO
-    # -------------------------------------------------
-    with st.spinner("Processing video… please wait ⏳"):
+    with st.spinner("Processing video…"):
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -90,39 +80,38 @@ if uploaded_video:
                 cx = (x1 + x2) / 2
                 box_h = y2 - y1
 
-                # ---------------- Distance (0–1)
-                rel_dist = min((box_h / h) / DIST_CLOSE, 1.0)
+                # Distance (0–1)
+                D = min((box_h / h) / DIST_CLOSE, 1.0)
 
-                # ---------------- Relative Speed (0–1)
+                # Speed (0–1)
                 now = time.time()
                 speed = 0
                 if i in prev_state:
                     ph, pt = prev_state[i]
                     speed = max((box_h - ph) / (now - pt + 1e-6), 0)
                 prev_state[i] = (box_h, now)
-                speed = min(speed / MAX_APPROACH_SPEED, 1.0)
+                V = min(speed / MAX_APPROACH_SPEED, 1.0)
 
-                # ---------------- Centrality (0–1)
-                central = 1 - abs(cx - w / 2) / (w / 2)
+                # Centrality (0–1)
+                P = 1 - abs(cx - w/2) / (w/2)
 
-                # ---------------- Risk (0–1)
-                risk = 0.5 * rel_dist + 0.3 * speed + 0.2 * central
+                # Risk (0–1)
+                risk = 0.5 * D + 0.3 * V + 0.2 * P
 
                 label = "PERSON" if cls_id == 0 else "VEHICLE"
-                color = (0, 255, 0) if cls_id == 0 else (255, 0, 0)
+                color = (0,255,0) if cls_id == 0 else (255,0,0)
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(frame, (x1,y1),(x2,y2),color,2)
                 cv2.putText(
                     frame,
                     f"{label} | RISK {risk:.2f}",
-                    (x1, y1 - 6),
+                    (x1, y1-6),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
                     color,
                     2
                 )
 
-                # ---------------- Decisions
                 if cls_id == 0 and risk >= 0.6:
                     action = "STOP"
                 elif cls_id == 1 and risk >= 0.8:
@@ -131,37 +120,30 @@ if uploaded_video:
             cv2.putText(
                 frame,
                 f"ACTION: {action}",
-                (20, 40),
+                (20,40),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
-                (0, 0, 255),
+                (0,0,255),
                 3
             )
 
             frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
             processed += 1
             if total_frames > 0:
                 progress.progress(min(processed / total_frames, 1.0))
 
     cap.release()
 
-    # -------------------------------------------------
-    # SAFE VIDEO SAVE (CRASH-PROOF)
-    # -------------------------------------------------
     if len(frames) == 0:
-        st.error("❌ No frames were processed. Please upload a valid video.")
+        st.error("❌ No frames processed.")
         st.stop()
 
-    out_path = "output.mp4"
-    safe_fps = int(fps) if fps > 1 else 25
-
     imageio.mimsave(
-        out_path,
+        "output.mp4",
         frames,
-        fps=safe_fps,
+        fps=int(fps),
         format="FFMPEG"
     )
 
-    st.success("✅ Processing complete")
-    st.video(out_path)
+    st.success("✅ Done")
+    st.video("output.mp4")
