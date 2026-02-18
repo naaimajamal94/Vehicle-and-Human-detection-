@@ -1,1 +1,4 @@
-streamlit==1.32.2
+ultralytics
+gradio
+opencv-python-headless
+torch
